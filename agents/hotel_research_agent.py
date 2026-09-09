@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any
 from dataclasses import dataclass, field
 
-from domain import Hotel, Source, Fact
+from domain import Hotel
+from domain.entities import Source, Fact, SourceType, Reliability, EntityType
 from knowledge import KnowledgeBase
 
 
@@ -84,8 +85,6 @@ class HotelResearchAgent:
 
     def _create_facts(self, hotel: Hotel) -> list[Fact]:
         """Создаёт Fact-объекты из характеристик отеля."""
-        from domain.entities import create_fact, EntityType
-
         facts = []
         fact_map = [
             ("stars", str(hotel.stars)),
@@ -101,7 +100,7 @@ class HotelResearchAgent:
         ]
 
         for field_name, value in fact_map:
-            fact = create_fact(
+            fact = Fact(
                 entity_id=hotel.id,
                 entity_type_ref=EntityType.HOTEL,
                 field=field_name,
@@ -116,13 +115,14 @@ class HotelResearchAgent:
     async def save_evidence(self, evidence: HotelEvidence) -> None:
         """Сохраняет Evidence в KnowledgeBase."""
         if self.knowledge is not None:
+            from domain import create_source
             # Создаём source
             source = self.knowledge.save_source(
-                Source(
-                    url=evidence.official_url,
+                create_source(
+                    url=evidence.official_url or "",
                     title=f"Hotel research: {evidence.hotel_name}",
-                    source_type="official_hotel",
-                    reliability="high",
+                    source_type=SourceType.OFFICIAL_HOTEL,
+                    reliability=Reliability.HIGH,
                 )
             )
             for fact in evidence.facts:
