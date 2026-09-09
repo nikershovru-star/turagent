@@ -110,7 +110,7 @@ class TourAgent:
         
         # Курорты по стране
         for country in PILOT_COUNTRIES:
-            if country.lower() in text_lower and any(t in text_lower for t in ["курорт", "пляж", "город", "куда", "что есть"]):
+            if country.name.lower() in text_lower and any(t in text_lower for t in ["курорт", "пляж", "город", "куда", "что есть"]):
                 intents.append("get_resorts_for_country")
                 break
         
