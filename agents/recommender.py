@@ -67,7 +67,7 @@ class RecommendationEngine:
                 "risks": risks,
                 "confidence": cand.get("confidence", 0.5),
                 "sources": cand.get("sources", []),
-            })
+            }))
 
         # Sort by score descending
         scored.sort(key=lambda x: x[0], reverse=True)
