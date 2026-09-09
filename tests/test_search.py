@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Тесты: поиск (TURAGENT v2.0 §38)."""
 from __future__ import annotations
-from domain import PILOT_COUNTRIES, PILOT_RESORTS, get_store
+from domain import PILOT_COUNTRIES, PILOT_RESORTS
+from storage import get_store
 from infrastructure.llm_adapter import TOOLS, call_tool
 from infrastructure.agent import TourAgent
 

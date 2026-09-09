@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Тесты: информация по странам (TURAGENT v2.0 §38)."""
 from __future__ import annotations
-from domain import PILOT_COUNTRIES, get_store
+from domain import PILOT_COUNTRIES
+from storage import get_store
 from domain.entities import Country
 
 
