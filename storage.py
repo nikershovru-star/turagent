@@ -31,47 +31,16 @@ class InMemoryStore:
         self._facts: dict[str, Fact] = {}
         self._agent_notes: dict[str, AgentNote] = {}
         self._hotel_offers: dict[str, HotelOffer] = {}
-        self._resort_country: dict[str, str] = {}  # resort_name → country_name
         self._initialized = False
     
-    def _extract_city_from_airport(self, airport: str) -> str:
-        """Извлечь город из airport (напр. 'Хургада (HRG)' → 'Хургада')."""
-        if not airport:
-            return ""
-        # Берём часть до первой скобки или запятой
-        city = airport.split("(")[0].split(",")[0].strip()
-        return city
-    
     def initialize_with_seed(self):
-        """Загрузить seed-данные в хранилище и сопоставить курорты со странами."""
+        """Загрузить seed-данные в хранилище."""
         if self._initialized:
             return
-        
-        # Загружаем страны
         for country in PILOT_COUNTRIES:
             self._countries[country.name] = country
-        
-        # Для быстрого поиска: city → country_name
-        city_to_country: dict[str, str] = {}
-        for country in PILOT_COUNTRIES:
-            for airport in country.airports:
-                city = airport.strip()
-                city_to_country[city.lower()] = country.name
-        
-        # Загружаем курорты и сопоставляем со странами по airport
         for resort in PILOT_RESORTS:
             self._resorts[resort.name] = resort
-            city = self._extract_city_from_airport(resort.airport)
-            if city.lower() in city_to_country:
-                self._resort_country[resort.name] = city_to_country[city.lower()]
-            else:
-                # Fallback: пытаемся найти по названию курорта (если содержит город)
-                resort_name_lower = resort.name.lower()
-                for cname, ctry in city_to_country.items():
-                    if cname in resort_name_lower:
-                        self._resort_country[resort.name] = ctry
-                        break
-        
         self._initialized = True
     
     def get_country(self, name: str) -> Optional[Country]:
@@ -84,18 +53,26 @@ class InMemoryStore:
         return self._resorts.get(name)
     
     def get_resorts_by_country(self, country_name: str) -> list[Resort]:
-        """Возвращает список курортов для страны."""
-        return [
-            r for r in self._resorts.values()
-            if self._resort_country.get(r.name) == country_name
-        ]
+        """Возвращает список курортов для страны.
+        
+        Примечание: курорты в seed_data не имеют явной привязки к стране
+        (country_id = None), поэтому сопоставление идёт по airport: 
+        первый город из airport курорта должен содержаться в airports списке страны.
+        """
+        country = self._countries.get(country_name)
+        if not country:
+            return []
+        country_cities = {a.strip().lower() for a in country.airports}
+        result = []
+        for resort in self._resorts.values():
+            airport = resort.airport or ""
+            city = airport.split("(")[0].split(",")[0].strip().lower()
+            if city in country_cities:
+                result.append(resort)
+        return result
     
     def get_resorts(self) -> list[Resort]:
         return list(self._resorts.values())
-    
-    def get_resort_country(self, resort_name: str) -> Optional[str]:
-        """Возвращает страну курорта по имени."""
-        return self._resort_country.get(resort_name)
     
     def save_country(self, country: Country):
         self._countries[country.name] = country

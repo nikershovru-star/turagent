@@ -6,8 +6,7 @@
 """
 import asyncio
 import logging
-import re
-from typing import Any, Optional
+from typing import Any
 from dataclasses import dataclass, field
 
 from aiogram.types import Message
@@ -100,42 +99,7 @@ class TourAgent:
 - Если данных нет — скажи честно, а не выдумывай
 """
     
-    def _extract_country(self, text: str) -> Optional[str]:
-        """Извлечь название страны из текста."""
-        text_lower = text.lower()
-        for country in PILOT_COUNTRIES:
-            if country.name.lower() in text_lower:
-                return country.name
-        return None
-    
-    def _extract_resort_name(self, text: str, known_names: list[str]) -> Optional[str]:
-        """Найти название курорта в тексте по известным именам."""
-        text_lower = text.lower()
-        # Сначала пробуем точные совпадения
-        for name in known_names:
-            if name.lower() in text_lower:
-                return name
-        return None
-    
-    def _extract_budget_amount(self, text: str) -> Optional[int]:
-        """Извлечь сумму бюджета из текста (в рублях)."""
-        # Ищем числа с рублями/₽/руб
-        patterns = [
-            r'(\d{3,})\s*(?:руб|рублей|₽|р\.?)',
-            r'(\d{3,})\s*(?:rub|rubles|rub\.?)',
-        ]
-        for pat in patterns:
-            m = re.search(pat, text, re.IGNORECASE)
-            if m:
-                return int(m.group(1))
-        # Просто число ближайшее к упоминанию "бюджет"
-        if "бюджет" in text.lower():
-            m = re.search(r'\b(\d{3,})\b', text)
-            if m:
-                return int(m.group(1))
-        return None
-    
-    def detect_intent(self, text: str) -> list[str]:
+    async def detect_intent(self, text: str) -> list[str]:
         """Детекция интентов по тексту сообщения."""
         text_lower = text.lower()
         intents = []
@@ -145,16 +109,17 @@ class TourAgent:
             intents.append("get_countries_info")
         
         # Курорты по стране
-        country_name = self._extract_country(text)
-        if country_name and any(t in text_lower for t in ["курорт", "пляж", "город", "куда", "что есть"]):
-            intents.append("get_resorts_for_country")
+        for country in PILOT_COUNTRIES:
+            if country.lower() in text_lower and any(t in text_lower for t in ["курорт", "пляж", "город", "куда", "что есть"]):
+                intents.append("get_resorts_for_country")
+                break
         
         # Сравнение
         if "сравнить" in text_lower or "разница" in text_lower or "какой лучше" in text_lower or "сравнение" in text_lower:
             intents.append("compare_resorts")
         
         # Бюджет
-        if self._extract_budget_amount(text) is not None or any(t in text_lower for t in ["бюджет", "сколько стоит", "цена", "стоимость", "дорого", "дешево"]):
+        if any(t in text_lower for t in ["бюджет", "сколько стоит", "цена", "стоимость", "дорого", "дешево", "rub", "руб", "₽"]):
             intents.append("classify_budget")
         
         # Поиск тура
@@ -162,7 +127,7 @@ class TourAgent:
             intents.append("tour_search")
         
         # Отели
-        if any(t in text_lower for t in ["отель", "hotel", "хотэль", "номер", "lodging", "жилье", "проживание", "цены на"]):
+        if any(t in text_lower for t in ["отель", "hotel", "hotel", "номер", "lodging", "жилье", "проживание", "цены на"]):
             intents.append("hotels_search")
         
         # Общий чат и вопросы
@@ -174,57 +139,31 @@ class TourAgent:
         
         return intents
     
-    def parse_tool_args(self, intent: str, text: str) -> dict:
-        """Парсит аргументы для инструмента из текста."""
-        if intent == "get_resorts_for_country":
-            country = self._extract_country(text)
-            return {"country": country or ""}
-        
-        if intent == "compare_resorts":
-            known = [r.name for r in PILOT_RESORTS]
-            first = self._extract_resort_name(text, known)
-            # Ищем второе название (попробуем после "и", "с", "vs", "или")
-            rest = text
-            if first:
-                rest = text.split(first, 1)[-1] if first in text else text
-            second = self._extract_resort_name(rest, known)
-            if not second and first:
-                second = first  # degenerate: сравнить с самим собой
-            return {"a": first or "", "b": second or ""}
-        
-        if intent == "classify_budget":
-            amount = self._extract_budget_amount(text)
-            return {"budget": amount or 0}
-        
-        return {}
-    
-    async def run_tools(self, intents: list[str], text: str) -> dict[str, str]:
-        """Запуск инструментов по интентам с парсингом аргументов."""
+    async def run_tools(self, intents: list[str]) -> dict[str, str]:
+        """Запуск инструментов по интентам."""
         results = {}
         for intent in intents:
             if intent in TOOLS:
                 tool = TOOLS[intent]
-                args = self.parse_tool_args(intent, text)
                 try:
-                    result = await call_tool(intent, args)
+                    result = await call_tool(intent, {})
                     results[intent] = result
                 except Exception as e:
                     logger.warning(f"Инструмент {intent} ошибка: {e}")
-                    results[intent] = f"Ошибка: {e}"
         return results
     
     async def answer(self, message: Message) -> str:
         """Генерация ответа на сообщение."""
         text = message.text or ""
-        intents = self.detect_intent(text)
+        intents = await self.detect_intent(text)
         
         # Хендлим команды — их уже обрабатывают роутеры
         if text.startswith("/"):
             if any(cmd in text for cmd in ["/start", "/help", "/country", "/resorts", "/tour", "/budget", "/compare", "/hotels"]):
                 return None  # Роутер обработает
         
-        # Запускаем инструменты с парсингом аргументов
-        tool_results = await self.run_tools(intents, text)
+        # Запускаем инструменты
+        tool_results = await self.run_tools(intents)
         
         # Формируем контекст для LLM
         context = f"Вопрос пользователя: {text}\n\n"

@@ -1,34 +1,47 @@
 #!/usr/bin/env python3
 """LLM-адаптер для бота (Ollama).
-Использует Ollama API для генерации ответов на вопросы пользователей.
+
+Обеспечивает генерацию ответов через Ollama (qwen2.5:14b).
+Поддерживает: генерацию текста, system-prompt, streaming (опционально).
 """
-import asyncio
+from __future__ import annotations
+
 import json
-from typing import Any
+import logging
 from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 import httpx
-from aiogram.types import Message
 
-from domain.config import OLLAMA_BASE_URL, OLLAMA_MODEL
+logger = logging.getLogger(__name__)
+
+
+# Конфигурация по умолчанию (переопределяется через config.py)
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "qwen2.5:14b"
+OLLAMA_TIMEOUT = 30.0
+
+
+class OllamaError(Exception):
+    """Ошибка работы с Ollama."""
+    pass
 
 
 @dataclass
 class LLMResponse:
-    """Ответ от LLM."""
+    """Ответ LLM."""
     text: str
-    raw: dict[str, Any] = field(default_factory=dict)
-    used_tools: list[str] = field(default_factory=list)
-    latency_ms: float = 0.0
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    raw: Optional[dict[str, Any]] = None
 
 
 class OllamaAdapter:
-    """Адаптер для Ollama API.
+    """Адаптер для работы с Ollama API.
     
-    Поддерживает:
-    - generate: генерация текста по промпту
-    - chat: чат-режим (multi-turn)
-    - tools: вызов инструментов (поиск, информация)
+    Предоставляет:
+    - generate(): генерация текста по промпту
+    - chat(): чат-режим (сообщения, system-промпт)
+    - health_check(): проверка доступности
     """
     
     def __init__(
@@ -40,14 +53,14 @@ class OllamaAdapter:
         self.base_url = base_url or OLLAMA_BASE_URL
         self.model = model or OLLAMA_MODEL
         self.system_prompt = system_prompt or self._default_system_prompt()
-        self._client: httpx.AsyncClient | None = None
+        self._client: Optional[httpx.AsyncClient] = None
     
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
-                timeout=30.0,
+                timeout=OLLAMA_TIMEOUT,
                 follow_redirects=True,
             )
         return self._client
@@ -55,17 +68,14 @@ class OllamaAdapter:
     def _default_system_prompt(self) -> str:
         return (
             "Ты — тур-агент. Ты помогаешь пользователям выбирать направления, "
-            "курорты, отели и туры. Ты вежливый, профессиональный и assets-based.\n\n"
-            "Твои возможности:\n"
-            "- Давать информацию о странах (виза, валюта, сезон, советы)\n"
-            "- Показывать список курортов по стране\n"
-            "- Помогать выбрать тур по датам, людям, бюджету, цели\n"
-            "- Сравнивать два курорта\n"
-            "- Давать рекомендации по бюджету\n"
-            "- Говорить, что функции в разработке (отели, цены, бронирование)\n\n"
-            "Важно: не выдумывай цены, отели, наличие мест — говори, что это в разработке.\n"
-            "Если пользователь просит конкретные цены или бронирование — говори, что нужно уточнить у тур-оператора.\n\n"
-            "Отвечай на русском языке, кратко, но с информацией."
+            "курорты, отели и туры. Анализируй запросы, используй доступные инструменты "
+            "для получения информации, формулируй ответы кратко и по делу.\n\n"
+            "Доступные инструменты:\n"
+            "- get_countries_info: список стран с информацией\n"
+            "- get_resorts_for_country: список курортов по стране\n"
+            "- compare_resorts: сравнение двух курортов\n"
+            "- classify_budget: классификация бюджета\n\n"
+            "Ты отвечаешь на русском. Если не знаешь точного ответа — скажи솔직но."
         )
     
     async def generate(
@@ -73,41 +83,35 @@ class OllamaAdapter:
         prompt: str,
         system: str = None,
         temperature: float = 0.7,
-        max_tokens: int = 1000,
     ) -> LLMResponse:
-        """Генерация текста по промпту (single response)."""
-        start = asyncio.get_event_loop().time()
+        """Генерация текста по промпту."""
+        system = system or self.system_prompt
         
         payload = {
             "model": self.model,
             "prompt": prompt,
+            "system": system,
             "stream": False,
-            "system": system or self.system_prompt,
             "options": {
                 "temperature": temperature,
-                "num_predict": max_tokens,
+                "num_ctx": 4096,
             },
         }
         
         try:
-            resp = await self.client.post("/api/generate", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            text = data.get("response", "")
-            latency = (asyncio.get_event_loop().time() - start) * 1000
+            response = await self.client.post("/api/generate", json=payload)
+            response.raise_for_status()
+            data = response.json()
             
             return LLMResponse(
-                text=text.strip(),
+                text=data.get("response", ""),
+                tool_calls=[],
                 raw=data,
-                latency_ms=latency,
             )
+        except httpx.TimeoutException as e:
+            raise OllamaError(f"Timeout: {e}") from e
         except Exception as e:
-            return LLMResponse(
-                text=f"Ошибка LLM: {e}",
-                raw={"error": str(e)},
-                latency_ms=(asyncio.get_event_loop().time() - start) * 1000,
-            )
+            raise OllamaError(f"LLM error: {e}") from e
     
     async def chat(
         self,
@@ -115,58 +119,55 @@ class OllamaAdapter:
         system: str = None,
         temperature: float = 0.7,
     ) -> LLMResponse:
-        """Чат-режим (multi-turn)."""
-        start = asyncio.get_event_loop().time()
+        """Чат-режим (история сообщений)."""
+        system = system or self.system_prompt
         
         payload = {
             "model": self.model,
             "messages": messages,
+            "system": system,
             "stream": False,
-            "system": system or self.system_prompt,
             "options": {
                 "temperature": temperature,
+                "num_ctx": 4096,
             },
         }
         
         try:
-            resp = await self.client.post("/api/chat", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            response = await self.client.post("/api/chat", json=payload)
+            response.raise_for_status()
+            data = response.json()
             
-            text = data.get("message", {}).get("content", "")
-            latency = (asyncio.get_event_loop().time() - start) * 1000
-            
+            message = data.get("message", {})
             return LLMResponse(
-                text=text.strip(),
+                text=message.get("content", ""),
+                tool_calls=message.get("tool_calls", []),
                 raw=data,
-                latency_ms=latency,
             )
         except Exception as e:
-            return LLMResponse(
-                text=f"Ошибка LLM: {e}",
-                raw={"error": str(e)},
-                latency_ms=(asyncio.get_event_loop().time() - start) * 1000,
-            )
+            raise OllamaError(f"Chat error: {e}") from e
     
     async def health_check(self) -> bool:
         """Проверка доступности Ollama."""
         try:
-            resp = await self.client.get("/api/tags")
-            return resp.status_code == 200
+            response = await self.client.get("/api/tags")
+            return response.status_code == 200
         except Exception:
             return False
     
     async def close(self):
-        """Закрыть клиент."""
+        """Закрыть HTTP-клиент."""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
 
 
-# ====== Инструменты (tools) — данные бота ======
+# ============================================================================
+# Инструменты (tools) — данные бота
+# ============================================================================
 
 async def get_countries_info() -> str:
-    """Список стран и краткая информация."""
+    """Информация обо всех странах (виза, валюта, сезон, pitfalls)."""
     from handlers.country import COUNTRY_DATA
     lines = []
     pitfall_prefix = "⚠ Подводные камни:\n"
@@ -203,7 +204,9 @@ async def classify_budget(budget: int) -> str:
     return _classify(budget)
 
 
-# ====== Реестр инструментов ======
+# ============================================================================
+# Реестр инструментов
+# ============================================================================
 
 TOOLS: dict[str, dict] = {
     "get_countries_info": {
@@ -230,7 +233,7 @@ async def call_tool(name: str, args: dict) -> str:
     tool = TOOLS.get(name)
     if not tool:
         return f"Инструмент '{name}' не найден"
-    
+
     func = tool["func"]
     try:
         result = await func(**args)
@@ -239,22 +242,21 @@ async def call_tool(name: str, args: dict) -> str:
         return f"Ошибка инструмента '{name}': {e}"
 
 
-# ====== Глобальный синглтон ======
-
-_llm_adapter: OllamaAdapter | None = None
+# Глобальный синглтон (для использования в боте)
+_llm: Optional[OllamaAdapter] = None
 
 
 def get_llm() -> OllamaAdapter:
-    """Получить LLM-адаптер (синглтон)."""
-    global _llm_adapter
-    if _llm_adapter is None:
-        _llm_adapter = OllamaAdapter()
-    return _llm_adapter
+    """Получить или создать LLM-адаптер."""
+    global _llm
+    if _llm is None:
+        _llm = OllamaAdapter()
+    return _llm
 
 
 async def close_llm():
     """Закрыть LLM-адаптер."""
-    global _llm_adapter
-    if _llm_adapter:
-        await _llm_adapter.close()
-        _llm_adapter = None
+    global _llm
+    if _llm:
+        await _llm.close()
+        _llm = None
