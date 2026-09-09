@@ -21,6 +21,7 @@ dp = Dispatcher(storage=storage)
 
 # Подключаем все обработчики
 from handlers import start, help, country, resorts, tour, budget, compare, hotels
+from infrastructure import agent as llm_agent
 
 dp.include_router(start.router)
 dp.include_router(help.router)
@@ -30,6 +31,29 @@ dp.include_router(tour.router)
 dp.include_router(budget.router)
 dp.include_router(compare.router)
 dp.include_router(hotels.router)
+
+# ====== AI-агент (fallback) ======
+# Перехватывает сообщения, не подходящие под команды, и отвечает через LLM + инструменты
+@dp.message()
+async def fallback_to_llm(message):
+    """Fallback: всё, что не обработано роутерами — передаём агенту."""
+    from aiogram.types import Message
+    text = message.text or ""
+    
+    # Игнорируем команды — они уже обработаны роутерами
+    if text.startswith("/"):
+        return
+    
+    try:
+        response = await llm_agent.get_agent().answer(message)
+        if response:
+            await message.answer(response)
+    except Exception as e:
+        logger.error(f"LLM agent error: {e}")
+        await message.answer(
+            "Извините, возникла ошибка. Попробуйте позже или используйте команды:\n"
+            "/help — справка"
+        )
 
 # ====== Запуск ======
 async def main():
